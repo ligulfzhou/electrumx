@@ -520,65 +520,92 @@ class SessionManager:
         '''Return a list of data about server peers.'''
         return self.peer_mgr.rpc_data()
 
-    async def rpc_query(self, items, limit):
+    async def rpc_query(self, items, limit=0):
         '''Returns data about a script, address or name.'''
         coin = self.env.coin
         db = self.db
-        lines = []
+        items_res = {}
 
-        def arg_to_hashX(arg):
+        def arg_to_hashX(arg)-> dict:
             try:
                 script = bytes.fromhex(arg)
-                lines.append(f'Script: {arg}')
-                return coin.hashX_from_script(script)
+                return {
+                    'type': 'script',
+                    'script': arg,
+                    'hashX': coin.hashX_from_script(script)
+                }
             except ValueError:
                 pass
 
             try:
                 hashX = coin.address_to_hashX(arg)
-                lines.append(f'Address: {arg}')
-                return hashX
+                return {
+                    'type': 'address',
+                    'address': arg,
+                    'hashX': hashX
+                }
             except Base58Error:
                 pass
 
             try:
                 script = coin.build_name_index_script(arg.encode("ascii"))
                 hashX = coin.name_hashX_from_script(script)
-                lines.append(f'Name: {arg}')
-                return hashX
+                return {
+                    'type': 'name',
+                    'name': arg,
+                    'hashX': hashX
+                }
             except (AttributeError, UnicodeEncodeError):
                 pass
 
-            return None
+            return dict()
 
         for arg in items:
-            hashX = arg_to_hashX(arg)
-            if not hashX:
+            item_res = {}
+            res = arg_to_hashX(arg)
+            if 'hashX' not in res:
                 continue
+
+            hashX = res.pop('hashX')
+            item_res.update(res)
             n = None
             history = await db.limited_history(hashX, limit=limit)
+            transactions = []
             for n, (tx_hash, height) in enumerate(history):
-                lines.append(f'History #{n:,d}: height {height:,d} '
-                             f'tx_hash {hash_to_hex_str(tx_hash)}')
-            if n is None:
-                lines.append('No history found')
+                transactions.append({
+                    'n': n,
+                    'height': height,
+                    'tx_hash': hash_to_hex_str(tx_hash)
+                })
+            item_res.update({
+                'transactions': transactions
+            })
+
             n = None
             utxos = await db.all_utxos(hashX)
+            utxos_ = []
             for n, utxo in enumerate(utxos, start=1):
-                lines.append(f'UTXO #{n:,d}: tx_hash '
-                             f'{hash_to_hex_str(utxo.tx_hash)} '
-                             f'tx_pos {utxo.tx_pos:,d} height '
-                             f'{utxo.height:,d} value {utxo.value:,d}')
-                if n == limit:
-                    break
-            if n is None:
-                lines.append('No UTXOs found')
+                utxos_.append({
+                    'n': n,
+                    'tx_hash': hash_to_hex_str(utxo.tx_hash),
+                    'tx_pos': utxo.tx_pos,
+                    'height': utxo.height,
+                    'value': utxo.value
+                })
+            item_res.update({
+                'utxos': utxos_
+            })
 
             balance = sum(utxo.value for utxo in utxos)
-            lines.append(f'Balance: {coin.decimal_value(balance):,f} '
-                         f'{coin.SHORTNAME}')
+            item_res.update({
+                'balance': float(coin.decimal_value(balance))
+            })
 
-        return lines
+            items_res.update({
+                arg: item_res
+            })
+
+        return items_res
 
     async def rpc_sessions(self):
         '''Return statistics about connected sessions.'''
